@@ -1,0 +1,42 @@
+Fuzzy Matching Trial
+author: Bova Marco
+
+Our goal is to match two datasets containing informations for us electrical grid nodes:
+- sub.csv which contains informations about the coordinates of the electrical grid nodes
+- ISO_lmp_nodes for each ISO region (texas, i.e. ERCOT, is not included since the users in the state 
+have utility choice, thus the utility company are not local monopolies) 
+which contains informations about the status. Since we don't have a full
+correspondance between the two datasets, we will fuzzy match them. 
+Your main matching variables will be the "name" variable in sub.csv and the "location" 
+variable in the ISO_lmp_nodes datasets.
+
+These are the following steps to create the fuzzy matched dataset: 
+
+1. Geospatially merge the grid nodes in sub.csv to the ISO regions shapefile 
+However intersecting with the region RTO the border obervations gives back dupicates. 
+TO solve part of this since we are interested only in the 6 ISO area divisions, 
+we make sure that no duplicates are present for each  ISO. 
+To do this drop the other variables other than RTO_ISO, that comes from 
+"RTO_Regions", which is named iso_regions.
+
+2. Subset each grid node by ISO region
+each sub.id has a duplicate, one is loc_type = zon and the other is a loc_type = reg
+but with the same coordinates.
+
+3. Match these geocoded grid nodes to their associated grid node names of each ISO 
+that appear in the Grid Status datasets (the "ISO_lmp_nodes" folder) -- you do
+this by some sort of fuzzy string matching based on the "name"/"location" columns
+that appear in both datasets
+
+4. Unfortunately the trials carried out do not bring to an satisfactiory outcome, 
+as only a small percentage of obervations are matching, due to deep differences 
+in name and locations, and to size differences between the two datasets. 
+
+5. To find the informations we are wanting to get, we try to scrape the coordinates 
+from gridstatus website and combine the coordinates with the gridstatus datasets, 
+informations about the electrical nodes. 
+
+6. 
+
+
+
