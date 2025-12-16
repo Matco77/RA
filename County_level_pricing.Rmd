@@ -1,0 +1,629 @@
+---
+title: "County level analysis"
+author: "Marco"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r 1) Merge yearly county level, echo=FALSE}
+library(readxl)
+library(dplyr)
+library(janitor)
+
+# Define years to process
+years <- 2012:2024
+
+# Initialize empty list to store results
+all_county_aggregated <- list()
+
+# Loop through each year
+for (year in years) {
+
+  cat("Processing year:", year, "\n")
+  
+  # Read sales data for the year
+  sales_file <- paste0("C:\\Users\\Bova\\Downloads\\RAproject\\Pricing\\EIA 861\\Sales_Ult_Cust_", year, ".xlsx")
+  
+  # Check if file exists
+  if (!file.exists(sales_file)) {
+    cat("  Warning: File not found for year", year, "- skipping\n")
+    next
+  }
+  
+  sales <- read_excel(sales_file, skip = 2)
+  
+  # Check number of columns
+  cat("  Number of columns:", ncol(sales), "\n")
+  
+  # Handle different column structures
+  if (ncol(sales) == 23) {
+    # Older format (2012-2013 possibly) - missing one category field
+    # Convert numeric columns (adjust range based on actual structure)
+    sales[, 9:23] <- lapply(sales[, 9:23], as.numeric)
+    
+    names(sales) <- c("data_year","utility_number","utility_name","part","service_type","data_type","state","ownership",
+                      "residential_revenues_thousand_dollars","residential_sales_mwh","residential_customers_count",
+                      "commercial_revenues_thousand_dollars","commercial_sales_mwh","commercial_customers_count",
+                      "industrial_revenues_thousand_dollars","industrial_sales_mwh","industrial_customers_count",
+                      "transportation_revenues_thousand_dollars","transportation_sales_mwh","transportation_customers_count",
+                      "total_revenues_thousand_dollars","total_sales_mwh","total_customers_count")
+    
+    # Add missing ba_code column as NA
+    sales$ba_code <- NA
+    
+  } else if (ncol(sales) == 24) {
+    # Standard format (2014+ probably)
+    sales[, 10:24] <- lapply(sales[, 10:24], as.numeric)
+    
+    names(sales) <- c("data_year","utility_number","utility_name","part","service_type","data_type","state","ownership","ba_code",
+                      "residential_revenues_thousand_dollars","residential_sales_mwh","residential_customers_count",
+                      "commercial_revenues_thousand_dollars","commercial_sales_mwh","commercial_customers_count",
+                      "industrial_revenues_thousand_dollars","industrial_sales_mwh","industrial_customers_count",
+                      "transportation_revenues_thousand_dollars","transportation_sales_mwh","transportation_customers_count",
+                      "total_revenues_thousand_dollars","total_sales_mwh","total_customers_count")
+    
+  } else {
+    cat("  Warning: Unexpected number of columns (", ncol(sales), ") for year", year, "- skipping\n")
+    cat("  Column names:", paste(names(sales), collapse = ", "), "\n")
+    next
+  }
+  
+  # Calculate prices for each observation
+  sales <- sales %>%
+    mutate(
+      residential_price_cents_kwh = ifelse(residential_sales_mwh > 0,
+                                           (residential_revenues_thousand_dollars * 1000) / (residential_sales_mwh * 1000) * 100, NA),
+      commercial_price_cents_kwh = ifelse(commercial_sales_mwh > 0,
+                                          (commercial_revenues_thousand_dollars * 1000) / (commercial_sales_mwh * 1000) * 100, NA),
+      industrial_price_cents_kwh = ifelse(industrial_sales_mwh > 0,
+                                          (industrial_revenues_thousand_dollars * 1000) / (industrial_sales_mwh * 1000) * 100, NA),
+      transportation_price_cents_kwh = ifelse(transportation_sales_mwh > 0,
+                                              (transportation_revenues_thousand_dollars * 1000) / (transportation_sales_mwh * 1000) * 100, NA),
+      total_price_cents_kwh = ifelse(total_sales_mwh > 0,
+                                     (total_revenues_thousand_dollars * 1000) / (total_sales_mwh * 1000) * 100, NA)
+    )
+  
+  #  Read service territory data
+  serv_file <- paste0("C:\\Users\\Bova\\Downloads\\RAproject\\Pricing\\EIA 861\\Service_Territory_", year, ".xlsx")
+  
+  if (!file.exists(serv_file)) {
+    cat("  Warning: Service territory file not found for year", year, "- skipping\n")
+    next
+  }
+  
+  serv <- read_excel(serv_file)
+  
+# Make names coherent with sales
+# Handle different column structures in service territory files
+  if (ncol(serv) == 6) {
+    names(serv) <- c("data_year", "utility_number", "utility_name", "short_form", "state", "county")
+  } else if (ncol(serv) == 5) {
+    names(serv) <- c("data_year", "utility_number", "utility_name", "state", "county")
+    serv$short_form <- NA
+  } else {
+    cat("  Warning: Unexpected service territory structure for year", year, "\n")
+    cat("  Service columns:", ncol(serv), "\n")
+  }
+
+  #  Join sales to service territory
+  county <- serv %>%
+    left_join(sales, by = c("data_year", "utility_number", "utility_name", "state"), relationship = "many-to-many")
+  #  Aggregate by county being careful to treat the part A B C "To calculate a state or the US total, sum Parts (A,B,C & D) for Revenue, but only Parts (A,B & D) for Sales and Customer"
+  county_aggregated <- county %>%
+    group_by(county, state, data_year) %>%
+    summarise(
+      # Residential - sum ALL parts for revenue, only A,B,D for sales
+      residential_revenues_thousand_dollars = sum(residential_revenues_thousand_dollars, na.rm = TRUE),
+      residential_sales_mwh = sum(residential_sales_mwh[part %in% c("A", "B", "D")], na.rm = TRUE),
+      residential_price_cents_kwh = ifelse(residential_sales_mwh > 0,
+                                           (residential_revenues_thousand_dollars * 1000) / (residential_sales_mwh * 1000) * 100, NA),
+      # Commercial - sum ALL parts for revenue, only A,B,D for sales
+      commercial_revenues_thousand_dollars = sum(commercial_revenues_thousand_dollars, na.rm = TRUE),
+      commercial_sales_mwh = sum(commercial_sales_mwh[part %in% c("A", "B", "D")], na.rm = TRUE),
+      commercial_price_cents_kwh = ifelse(commercial_sales_mwh > 0,
+                                          (commercial_revenues_thousand_dollars * 1000) / (commercial_sales_mwh * 1000) * 100, NA),
+      # Industrial - sum ALL parts for revenue, only A,B,D for sales
+      industrial_revenues_thousand_dollars = sum(industrial_revenues_thousand_dollars, na.rm = TRUE),
+      industrial_sales_mwh = sum(industrial_sales_mwh[part %in% c("A", "B", "D")], na.rm = TRUE),
+      industrial_price_cents_kwh = ifelse(industrial_sales_mwh > 0,
+                                          (industrial_revenues_thousand_dollars * 1000) / (industrial_sales_mwh * 1000) * 100, NA),
+      # Transportation - sum ALL parts for revenue, only A,B,D for sales
+      transportation_revenues_thousand_dollars = sum(transportation_revenues_thousand_dollars, na.rm = TRUE),
+      transportation_sales_mwh = sum(transportation_sales_mwh[part %in% c("A", "B", "D")], na.rm = TRUE),
+      transportation_price_cents_kwh = ifelse(transportation_sales_mwh > 0,
+                                              (transportation_revenues_thousand_dollars * 1000) / (transportation_sales_mwh * 1000) * 100, NA),
+      # Total - sum ALL parts for revenue, only A,B,D for sales
+      total_revenues_thousand_dollars = sum(total_revenues_thousand_dollars, na.rm = TRUE),
+      total_sales_mwh = sum(total_sales_mwh[part %in% c("A", "B", "D")], na.rm = TRUE),
+      total_price_cents_kwh = ifelse(total_sales_mwh > 0,
+                                     (total_revenues_thousand_dollars * 1000) / (total_sales_mwh * 1000) * 100, NA),
+      .groups = "drop"
+    )
+  
+  #  Add to list
+  all_county_aggregated[[as.character(year)]] <- county_aggregated
+  
+  cat("  Completed year", year, "with", nrow(county_aggregated), "county records\n\n")
+}
+
+# Combine all years into one dataset
+county_aggregated_all_years <- bind_rows(all_county_aggregated)
+
+# Sort by state, county, and year
+county_aggregated_all_years <- county_aggregated_all_years %>%
+  arrange(state, county, data_year)
+
+unique(county_aggregated_all_years$state)
+unique(county_aggregated_all_years$state)
+
+# Check results
+cat("\nFinal dataset summary:\n")
+cat("Total rows:", nrow(county_aggregated_all_years), "\n")
+cat("Years included:", paste(sort(unique(county_aggregated_all_years$data_year)), collapse = ", "), "\n")
+cat("Unique counties:", length(unique(paste(county_aggregated_all_years$county, county_aggregated_all_years$state))), "\n")
+
+# Write to disk
+dir_out <- "C:/Users/Bova/Downloads/RAproject/Pricing/County level yearly"
+path_out <- file.path(dir_out, "county_aggregated_2012_2024.csv")
+write.csv(county_aggregated_all_years, path_out, row.names = FALSE)
+
+```
+
+```{r  upload monthly state data and downscale (2015-2024)}
+
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(janitor)
+
+setwd("C:/Users/Bova/Downloads/RAproject/Pricing")
+
+# -------------------------------------------------------------------- CONFIG --
+state_monthly_file <- "EIA 861 M by state/sales_revenue.xlsx"
+output_dir         <- "Monthly_outputs"
+years_to_process   <- 2015:2024
+
+dir.create(output_dir, showWarnings = FALSE)
+
+# Keep exactly the 51 "states" (50 + DC)
+states51 <- c(state.abb, "DC")
+normalize_state <- function(x) toupper(trimws(as.character(x)))
+
+cat("Reading state data...\n")
+
+# ----------------------- READ STATE MONTHLY DATA ------------------------------
+# Read headers to build column names
+hdr <- read_excel(state_monthly_file, sheet = "Monthly-States", n_max = 2, col_names = FALSE)
+top <- as.character(hdr[1, ])
+sub <- as.character(hdr[2, ])
+
+# Forward-fill sectors
+cur <- NA_character_
+for (i in seq_along(top)) {
+  if (!is.na(top[i]) && top[i] != "") cur <- top[i] else top[i] <- cur
+}
+
+# Build canonical column names
+names_clean <- ifelse(is.na(top) | top == "", sub, paste(top, sub)) %>%
+  tolower() %>%
+  str_replace_all("[^a-z0-9]+", "_") %>%
+  str_replace_all("_+", "_") %>%
+  str_remove("^_|_$") %>%
+  str_replace("^(residential|commercial|industrial|transportation|total)_revenue$", "\\1_revenues_thousand_dollars") %>%
+  str_replace("^(residential|commercial|industrial|transportation|total)_sales$", "\\1_sales_mwh")
+names_clean[1:4] <- c("year", "month", "state", "data_status")
+
+# Read the sheet
+state_monthly_all <- read_excel(
+  state_monthly_file, sheet = "Monthly-States",
+  skip = 2, col_names = names_clean
+) %>%
+  remove_empty("cols") %>%
+  mutate(
+    year  = as.integer(year),
+    month = as.integer(month),
+    state = normalize_state(state),
+    across(ends_with(c("_revenues_thousand_dollars","_sales_mwh","_price_cents_kwh")), as.numeric)
+  ) %>%
+  filter(year %in% years_to_process, state %in% states51)   # <-- FIXED year filter and state whitelist
+
+cat("  Loaded:", nrow(state_monthly_all), "state-months\n\n")
+
+# ----------------------- READ COUNTY ANNUAL DATA ------------------------------
+cat("Reading county data...\n")
+# Use your already-loaded object; normalize and restrict to 51 states & years
+county_aggregated_all <- county_aggregated_all_years %>%
+  clean_names() %>%
+  mutate(state = normalize_state(state)) %>%
+  filter(state %in% states51, data_year %in% years_to_process)
+
+cat("  Loaded:", nrow(county_aggregated_all), "county-years (51 states)\n\n")
+
+# ----------------------- PROCESS YEARS ----------------------------------------
+cat("Processing years...\n\n")
+
+sectors <- c("residential","commercial","industrial","transportation")
+all_results <- list()
+
+for (year in years_to_process) {
+  cat(" ", year, "... ")
+  state_year  <- state_monthly_all %>% filter(year == !!year) 
+  county_year <- county_aggregated_all %>% filter(data_year == !!year)
+
+  if (nrow(state_year) < 12 || nrow(county_year) == 0) {
+    cat("skip\n")
+    next
+  }
+ # Ensure months 1:12 exist per state/year (scaffold)
+ state_months <- state_year %>% distinct(state) %>% tidyr::crossing(month = 1:12) 
+ state_year <- state_months %>% left_join(state_year, by = c("state","month"), relationship = "many-to-many")
+
+ #  National monthly shares (by sector) for fallback if a state has no data
+ nat_props <- list()
+for (sec in sectors) {
+  rev_col <- paste0(sec, "_revenues_thousand_dollars")
+  sal_col <- paste0(sec, "_sales_mwh")
+
+  nat <- state_year %>%
+    dplyr::group_by(month) %>%
+    dplyr::summarise(
+      nat_rev = sum(.data[[rev_col]], na.rm = TRUE),
+      nat_sal = sum(.data[[sal_col]], na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  tot_rev <- sum(nat$nat_rev, na.rm = TRUE)
+  tot_sal <- sum(nat$nat_sal, na.rm = TRUE)
+
+  # <- compute vector props without if_else()
+  prop_rev_nat <- if (tot_rev > 0) nat$nat_rev / tot_rev else rep(1/12, nrow(nat))
+  prop_sal_nat <- if (tot_sal > 0) nat$nat_sal / tot_sal else rep(1/12, nrow(nat))
+
+  nat_props[[sec]] <- tibble::tibble(
+    month = nat$month,
+    !!paste0(sec, "_prop_rev_nat") := prop_rev_nat,
+    !!paste0(sec, "_prop_sal_nat") := prop_sal_nat
+  )
+}
+  
+ # State shares with NA->0, renormalized; fallback to national if state total == 0
+  proportions <- list()
+  for (sec in sectors) {
+    rev_col <- paste0(sec, "_revenues_thousand_dollars")
+    sal_col <- paste0(sec, "_sales_mwh")
+
+    # per-state monthly values (NA -> 0)
+    tmp <- state_year %>%
+      mutate(val_rev = coalesce(.data[[rev_col]], 0),
+             val_sal = coalesce(.data[[sal_col]], 0)) %>%
+      group_by(state) %>%
+      mutate(t_rev = sum(val_rev), t_sal = sum(val_sal)) %>%
+      ungroup()
+
+    # normalized shares when totals > 0
+    state_props <- tmp %>%
+      transmute(
+        state, month,
+        !!paste0(sec, "_prop_rev") := if_else(t_rev > 0, val_rev / t_rev, NA_real_),
+        !!paste0(sec, "_prop_sal") := if_else(t_sal > 0, val_sal / t_sal, NA_real_)
+      )
+
+    # fallback to national shares for states with t_rev==0 & t_sal==0
+    miss_states <- tmp %>%
+      group_by(state) %>%
+      summarise(t_rev = first(t_rev), t_sal = first(t_sal), .groups = "drop") %>%
+      filter(t_rev == 0 & t_sal == 0) %>%
+      pull(state)
+
+    if (length(miss_states)) {
+      state_props <- bind_rows(
+        state_props %>% filter(!(state %in% miss_states)),
+        tidyr::crossing(state = miss_states, nat_props[[sec]]) %>%
+          rename(
+            !!paste0(sec, "_prop_rev") := !!sym(paste0(sec, "_prop_rev_nat")),
+            !!paste0(sec, "_prop_sal") := !!sym(paste0(sec, "_prop_sal_nat"))
+          )
+      )
+    }
+    proportions[[sec]] <- state_props
+  }
+
+  # County-month base (replicate each county across 12 months of its state)
+  county_base <- county_year %>%
+    inner_join(state_year %>% distinct(state, month), by = "state")
+
+  # ------------------------------ Disaggregate -------------------------------
+  result <- county_base
+  for (sec in sectors) {
+    rev_col <- paste0(sec, "_revenues_thousand_dollars")
+    sal_col <- paste0(sec, "_sales_mwh")
+    prop_rev <- paste0(sec, "_prop_rev")
+    prop_sal <- paste0(sec, "_prop_sal")
+
+    result <- result %>%
+      left_join(proportions[[sec]], by = c("state","month")) %>%
+      mutate(
+        !!paste0(sec, "_monthly_mwh") :=
+          if (sal_col %in% names(.)) .data[[sal_col]] * .data[[prop_sal]] else NA_real_,
+        !!paste0(sec, "_monthly_revenues_thousand_dollars") :=
+          if (rev_col %in% names(.)) .data[[rev_col]] * .data[[prop_rev]] else NA_real_
+      )
+  }
+
+  # ------------------------------ Totals & prices -----------------------------
+ mwh_cols <- c("residential_monthly_mwh","commercial_monthly_mwh",
+                "industrial_monthly_mwh","transportation_monthly_mwh")
+ rev_cols <- c("residential_monthly_revenues_thousand_dollars",
+                "commercial_monthly_revenues_thousand_dollars",
+                "industrial_monthly_revenues_thousand_dollars",
+                "transportation_monthly_revenues_thousand_dollars")
+
+  result <- result %>%
+    mutate(
+      all_mwh_na = if_all(all_of(mwh_cols), ~ is.na(.x)),
+      all_rev_na = if_all(all_of(rev_cols), ~ is.na(.x)),
+
+      total_monthly_mwh = if_else(
+        all_mwh_na, NA_real_,
+        rowSums(across(all_of(mwh_cols)), na.rm = TRUE)
+      ),
+      total_monthly_revenues_thousand_dollars = if_else(
+        all_rev_na, NA_real_,
+        rowSums(across(all_of(rev_cols)), na.rm = TRUE)
+      ),
+      total_monthly_price_cents_kwh = if_else(
+        total_monthly_mwh > 0,
+        100 * total_monthly_revenues_thousand_dollars / total_monthly_mwh,
+        NA_real_
+      )
+    ) %>%
+    select(-all_mwh_na, -all_rev_na)
+
+ # Final columns
+  county_monthly <- result %>%
+    select(
+      county, state, data_year, month,
+      ends_with("_monthly_mwh"),
+      ends_with("_monthly_revenues_thousand_dollars"),
+      ends_with("_monthly_price_cents_kwh")
+    )
+
+  # Write year file
+  write.csv(county_monthly,
+            file.path(output_dir, paste0("county_monthly_", year, ".csv")),
+            row.names = FALSE)
+
+  all_results[[as.character(year)]] <- county_monthly
+  cat(nrow(county_monthly), "rows\n")
+}
+  
+# ----------------------- COMBINE ALL YEARS -----------------------------------
+cat("\nCombining years...\n")
+combined <- bind_rows(all_results)
+
+# County counts per year (distinct state+county)
+year_counts <- combined %>%
+  distinct(data_year, state, county) %>%
+  count(data_year, name = "n_counties") %>%
+  arrange(data_year)
+print(year_counts)
+
+# Total unique counties across all years (state+county)
+cat("Unique (state,county) overall:", combined %>% distinct(state, county) %>% nrow(), "\n")
+
+write.csv(combined,
+          file.path(output_dir, "county_monthly_2015_2024_combined.csv"),
+          row.names = FALSE)
+
+cat("  Total observations:", format(nrow(combined), big.mark = ","), "\n")
+cat("  Years:", paste(sort(unique(combined$data_year)), collapse = ", "), "\n")
+cat("  Counties (name-only):", length(unique(combined$county)), "\n\n")
+
+cat("COMPLETE!\n")
+cat("Output:", output_dir, "\n")
+```
+
+
+```{r check of the downscale}
+library(dplyr); library(readr); library(janitor); library(stringr)
+
+# --- inputs
+state_monthly_file <- "EIA 861 M by state/sales_revenue.xlsx"
+county_file <- "Monthly_outputs/county_monthly_2015_2024_combined.csv"
+years_to_process <- 2015:2024
+states51 <- c(state.abb, "DC")
+norm_state <- function(x) toupper(trimws(as.character(x)))
+
+# === 1) STATE TARGET (from the workbook you already used upstream)
+# Use the same header cleaning you had before so column names match
+hdr <- readxl::read_excel(state_monthly_file, sheet = "Monthly-States", n_max = 2, col_names = FALSE)
+top <- as.character(hdr[1, ]); sub <- as.character(hdr[2, ])
+cur <- NA_character_; for (i in seq_along(top)) { if (!is.na(top[i]) && top[i] != "") cur <- top[i] else top[i] <- cur }
+names_clean <- ifelse(is.na(top) | top == "", sub, paste(top, sub)) %>%
+  tolower() %>% str_replace_all("[^a-z0-9]+", "_") %>% str_replace_all("_+", "_") %>%
+  str_remove("^_|_$") %>%
+  str_replace("^(residential|commercial|industrial|transportation|total)_revenue$", "\\1_revenues_thousand_dollars") %>%
+  str_replace("^(residential|commercial|industrial|transportation|total)_sales$", "\\1_sales_mwh")
+names_clean[1:4] <- c("year","month","state","data_status")
+
+state_monthly <- readxl::read_excel(
+  state_monthly_file, sheet = "Monthly-States", skip = 2, col_names = names_clean
+) %>%
+  remove_empty("cols") %>%
+  mutate(
+    year  = as.integer(year),
+    month = as.integer(month),
+    state = norm_state(state)
+  ) %>%
+  filter(data_status == "Final", year %in% years_to_process, state %in% states51)
+
+# Build target price (use provided price if present; else compute from totals)
+state_target <- state_monthly %>%
+  mutate(
+    total_revenues_thousand_dollars = readr::parse_number(as.character(total_revenues_thousand_dollars)),
+    total_sales_mwh                 = readr::parse_number(as.character(total_sales_mwh)),
+    total_price_cents_kwh           = suppressWarnings(readr::parse_number(as.character(total_price_cents_kwh)))
+  ) %>%
+  transmute(
+    state, data_year = year, month,
+    target_price_cents_kwh = if (!all(is.na(total_price_cents_kwh))) {
+      total_price_cents_kwh
+    } else if (!all(is.na(total_revenues_thousand_dollars)) && !all(is.na(total_sales_mwh))) {
+      if_else(total_sales_mwh > 0, 100 * total_revenues_thousand_dollars / total_sales_mwh, NA_real_)
+    } else NA_real_
+  )
+
+# === 2) COUNTY AGGREGATION → state-month price from counties
+county <- read_csv(county_file, show_col_types = FALSE) %>%
+  clean_names() %>%
+  mutate(state = norm_state(state)) %>%
+  filter(data_year %in% years_to_process, state %in% states51)
+
+state_from_counties <- county %>%
+  group_by(state, data_year, month) %>%
+  summarise(
+    mwh  = sum(total_monthly_mwh, na.rm = TRUE),
+    revk = sum(total_monthly_revenues_thousand_dollars, na.rm = TRUE),
+    price_cents_kwh_from_counties = if_else(mwh > 0, 100 * revk / mwh, NA_real_),
+    .groups = "drop"
+  )
+
+# === 3) COMPARE & REPORT
+cmp <- state_from_counties %>%
+  inner_join(state_target, by = c("state","data_year","month")) %>%
+  mutate(diff_cents = price_cents_kwh_from_counties - target_price_cents_kwh,
+         absdiff = abs(diff_cents))
+
+# summary
+cat("Rows compared:", nrow(cmp), "\n")
+cat("MAE (cents/kWh):", signif(mean(cmp$absdiff, na.rm = TRUE), 6), "\n")
+cat("Max |diff| (cents/kWh):", signif(max(cmp$absdiff, na.rm = TRUE), 6), "\n")
+cat(">%0.01f c/kWh diffs: %d\n", 0.01, sum(cmp$absdiff > 0.01, na.rm = TRUE))
+
+# top 10 mismatches
+cmp %>%
+  arrange(desc(absdiff)) %>%
+  select(state, data_year, month,
+         price_cents_kwh_from_counties, target_price_cents_kwh, diff_cents, mwh, revk) %>%
+  head(10) %>%
+  print(n = 10)
+```
+
+```{r only 2023}
+library(readxl)
+library(dplyr)
+library(janitor)
+
+# 1) Read + keep just what we need
+sales_2023 <- read_excel("C:\\Users\\Bova\\Downloads\\RAproject\\Pricing\\EIA 861\\Sales_Ult_Cust_2023.xlsx", 
+                    skip= 2)
+
+#there is the need for some modification on the dataset column names since they are divided in categories; residential, cmmercial, total and in revnues etc..
+# 2) Convert columns 10-24 to numeric (these are all the revenue/sales/customer columns)
+sales_2023[, 10:24] <- lapply(sales_2023[, 10:24], as.numeric)
+
+names(sales_2023) <- c("data_year","utility_number","utility_name","part","service_type","data_type","state","ownership","ba_code",
+  "residential_revenues_thousand_dollars","residential_sales_mwh","residential_customers_count",
+  "commercial_revenues_thousand_dollars","commercial_sales_mwh","commercial_customers_count",
+  "industrial_revenues_thousand_dollars","industrial_sales_mwh","industrial_customers_count",
+  "transportation_revenues_thousand_dollars","transportation_sales_mwh","transportation_customers_count",
+  "total_revenues_thousand_dollars","total_sales_mwh","total_customers_count")
+
+# 2) Calculate prices for EACH observation (each row keeps its identity)
+attach(sales_2023)
+sales_2023<-sales_2023 %>%
+  mutate(
+    # Calculate prices (cents per kWh) for each row
+    # Convert: (revenue * 1000 dollars) / (sales * 1000 kWh) * 100 cents/dollar
+residential_price_cents_kwh = ifelse(residential_sales_mwh > 0,
+                                         (residential_revenues_thousand_dollars ) / (residential_sales_mwh )*100 , NA),
+commercial_price_cents_kwh = ifelse(commercial_sales_mwh > 0,
+                                        (commercial_revenues_thousand_dollars  ) / (commercial_sales_mwh )*100 ,NA),
+industrial_price_cents_kwh = ifelse(industrial_sales_mwh > 0,
+                                        (industrial_revenues_thousand_dollars ) / (industrial_sales_mwh )*100,NA),
+transportation_price_cents_kwh = ifelse(transportation_sales_mwh > 0,
+                                            (transportation_revenues_thousand_dollars ) / (transportation_sales_mwh )*100, NA),
+total_price_cents_kwh = ifelse(total_sales_mwh > 0,
+                                   (total_revenues_thousand_dollars ) / (total_sales_mwh ) , NA)
+                                 )
+detach(sales_2023)
+
+serv_2023 <- read_excel("C:\\Users\\Bova\\Downloads\\RAproject\\Pricing\\EIA 861\\Service_Territory_2023.xlsx")
+
+#make the names coherent with sales
+names(serv_2023) <- c("data_year", "utility_number", "utility_name", " short_form", "state", "county")
+
+#since have both same  utility name in different county; and multiple county pr utility name(expected)
+#i.e. same cunty covered by more than utility. 
+#as a consequence if a county has multiple utilities, it will get multiple rows (one per utility). 
+
+# Simple attach: duplicate each utility’s totals onto all its counties
+county_2023 <- serv_2023 %>%
+  left_join(sales_2023, by = c("data_year", "utility_number", "utility_name", "state" ),relationship = "many-to-many")
+
+head(county_2023)
+
+dir_out <- "C:/Users/Bova/Downloads/RAproject/Pricing/County level yearly"
+path_out <- file.path(dir_out, "county_yearly_2023.csv")
+
+#write to disk 
+write.csv(county_2023, path_out, row.names = FALSE)
+
+'EIA flags that:Tocalculate a state or the US total, sum Parts (A,B,C & D) for Revenue, but only Parts (A,B & D) for Sales and Customers.
+To avoid double counting of customers, the aggregated customer counts for the states and US do not include the customer count for respondents with ownership code "Behind the Meter".
+This group consists of Third Party Owners of rooftop solar systemsthis is to be regarded if we wantto make a single price per county'
+
+#make by county aggregate, disregard the differences in utilities, compute an average price for the county 
+attach(county_2023)
+
+county_aggregated_2023 <- county_2023 %>%
+  group_by(county, state, data_year) %>%
+  summarise(
+    # Residential - sum ALL parts for revenue, only A,B,D for sales
+    residential_revenues_thousand_dollars = sum(residential_revenues_thousand_dollars, na.rm = TRUE),
+    residential_sales_mwh = sum(residential_sales_mwh[part %in% c("A", "B", "D")], na.rm = TRUE),
+    residential_price_cents_kwh = ifelse(residential_sales_mwh > 0,
+                                         (residential_revenues_thousand_dollars ) / (residential_sales_mwh )*100 , NA),
+    # Commercial - sum ALL parts for revenue, only A,B,D for sales
+    commercial_revenues_thousand_dollars = sum(commercial_revenues_thousand_dollars, na.rm = TRUE),
+    commercial_sales_mwh = sum(commercial_sales_mwh[part %in% c("A", "B", "D")], na.rm = TRUE),
+    commercial_price_cents_kwh = ifelse(commercial_sales_mwh > 0,
+                                        (commercial_revenues_thousand_dollars ) / (commercial_sales_mwh  )*100 , NA),
+    # Industrial - sum ALL parts for revenue, only A,B,D for sales
+    industrial_revenues_thousand_dollars = sum(industrial_revenues_thousand_dollars, na.rm = TRUE),
+    industrial_sales_mwh = sum(industrial_sales_mwh[part %in% c("A", "B", "D")], na.rm = TRUE),
+    industrial_price_cents_kwh = ifelse(industrial_sales_mwh  > 0,
+                                        (industrial_revenues_thousand_dollars ) / (industrial_sales_mwh  ) * 100,  NA),
+    # Transportation - sum ALL parts for revenue, only A,B,D for sales
+    transportation_revenues_thousand_dollars = sum(transportation_revenues_thousand_dollars, na.rm = TRUE),
+    transportation_sales_mwh = sum(transportation_sales_mwh[part %in% c("A", "B", "D")], na.rm = TRUE),
+    transportation_price_cents_kwh = ifelse(transportation_sales_mwh  > 0,
+                                            (transportation_revenues_thousand_dollars ) / (transportation_sales_mwh ) * 100, NA),
+    # Total - sum ALL parts for revenue, only A,B,D for sales
+    total_revenues_thousand_dollars = sum(total_revenues_thousand_dollars, na.rm = TRUE),
+    total_sales_mwh = sum(total_sales_mwh[part %in% c("A", "B", "D")], na.rm = TRUE),
+    total_price_cents_kwh = ifelse(total_sales_mwh  > 0,
+                                   (total_revenues_thousand_dollars) / (total_sales_mwh) * 100, NA),
+    .groups = "drop")
+
+detach(county_2023)
+
+head(county_aggregated_2023)
+
+states <- c("AK","AL","AR","AZ","CA","CO","CT","DC","DE","FL","GA","HI","IA","ID","IL","IN","KS","KY","LA","MA",
+            "MD","ME","MI","MN","MO","MS","MT","NC","ND","NE","NH","NJ","NM","NV","NY","OH","OK","OR","PA",
+            "RI","SC","SD","TN","TX","UT","VA","VT","WA","WI","WV","WY")
+
+n_unique_counties_2023 <- county_aggregated_all[
+  county_aggregated_all$data_year == 2023 & county_aggregated_all$state %in% states,
+  c("state","county")
+] |> unique() |> nrow()
+n_unique_counties_2023
+#3142 uique counties in the 50 states
+
+
+path_out <- file.path("C:/Users/Bova/Downloads/RAproject/Pricing/County level yearly", "county_aggregated_2023.csv")
+#write to disk 
+write.csv(county_aggregated_2023, path_out, row.names = FALSE)
+```
